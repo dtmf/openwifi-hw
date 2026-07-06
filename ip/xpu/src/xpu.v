@@ -57,6 +57,8 @@ module xpu #
   input  wire [15:0] byte_count,
   input  wire fcs_in_strobe,
   input  wire fcs_ok,
+  input  wire is_dsss_rx, // rx_intf: 1 while a received DSSS frame owns the RX decode bus (DSSS unicast-ACK B1). The decode inputs above are re-sourced from rx_intf's merged bus in the BD; this flag distinguishes a DSSS reception for ACK rate + decoding-latency handling.
+  input  wire is_dsss_tx, // DSSS unicast-ACK recv side (2026-07-02): 1 when the frame the board is transmitting goes out as 1 Mbps DSSS (= tx_intf's latched phy_hdr_config[21], routed via the BD). Latched at phy_tx_done to widen the recv-ACK timeout windows for the peer's slow long-preamble DSSS ACK. Unconnected stub reads 0 -> OFDM windows unchanged.
   // phy len info
   input [14:0] n_ofdm_sym,//max 20166 = (22+65535*8)/26 (max ht len 65535 in sig, min ndbps 26 for mcs0)
   input [9:0]  n_bit_in_last_sym,//max ht ndbps 260 (ht mcs7)
@@ -89,6 +91,7 @@ module xpu #
   output wire tx_bb_is_ongoing,
   output wire tx_rf_is_ongoing,
   output wire ack_tx_flag,
+  output wire is_dsss_ack, // DSSS unicast-ACK B2: held in tx_control from the received frame's is_dsss_rx; -> BD -> tx_intf -> tx_bit_intf (selects the DSSS ACK datapath)
   output wire wea,
   output wire [9:0] addra,
   output wire [(C_S00_AXIS_TDATA_WIDTH-1):0] dina,
@@ -179,7 +182,7 @@ module xpu #
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg20; // slice count_total in bit [19:0]; slice selection in bit [21:20]
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg21; // slice count_start in bit [19:0]; slice selection in bit [21:20]
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg22; // slice count_end   in bit [19:0]; slice selection in bit [21:20]
-  // wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg23; //
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg23; // DSSS-ACK send_ack_wait_top (SIFS calib), low 15bit. OFDM uses slv_reg18.
   // wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg24; //
   // wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg25; //
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg26; // extra duration in CTS frame (response to RTS)
@@ -335,11 +338,39 @@ module xpu #
   assign phy_rx_start_delay_time = (slv_reg9[31]?slv_reg9[6:0]  :(band==1?24:25));//802.11-2012. Table 19-8—ERP characteristics
 
   assign n_bit_in_last_sym_tmp = n_bit_in_last_sym*25;
-  assign relative_decoding_latency = n_bit_in_last_sym_tmp[14:8];
-  assign send_ack_wait_top = (band==1?slv_reg18[14:0]:slv_reg18[30:16]); //band==1: 2.4GHz
+  // n_bit_in_last_sym comes from openofdm_rx's OFDM phy-length calc and is meaningless for a
+  // DSSS reception (the decode inputs are re-sourced from rx_intf's merged DSSS bus, but the
+  // phy-len trio stays openofdm-sourced). Force the OFDM decoding-latency credit to 0 for a
+  // DSSS frame so PREP_ACK's SIFS wait = send_ack_wait_top alone; the real DSSS demod latency
+  // is absorbed into a (calibrated) DSSS send_ack_wait_top value. (DSSS unicast-ACK B1, scope §5.)
+  assign relative_decoding_latency = is_dsss_rx ? 7'd0 : n_bit_in_last_sym_tmp[14:8];
+  // DSSS unicast-ACK SIFS calibration (scope §5/§139): a received 1 Mbps DSSS frame needs its
+  // OWN ACK fire-instant. relative_decoding_latency is already forced 0 for DSSS (xpu.v above),
+  // so the DSSS demod-to-fcs latency (~0.19us measured in sim) + tx startup is absorbed entirely
+  // into this wait. slv_reg23[14:0] is the runtime-tunable DSSS wait (driver-written, dialed in
+  // on-air via iq_ack_timing.md). OFDM is unchanged (slv_reg18 band split). is_dsss_rx and OFDM
+  // are mutually exclusive (the rx_intf mux ownership window), so there is no concurrent conflict.
+  assign send_ack_wait_top = is_dsss_rx ? slv_reg23[14:0] : (band==1?slv_reg18[14:0]:slv_reg18[30:16]); //band==1: 2.4GHz
 
-  assign recv_ack_timeout_top_adj = (band==1?slv_reg16[14:0]:slv_reg17[14:0]);
-  assign recv_ack_sig_valid_timeout_top = (band==1?slv_reg16[30:16]:slv_reg17[30:16]);
+  // DSSS recv-ACK window select (2026-07-02). A 1 Mbps long-preamble DSSS ACK's PLCP sig_valid
+  // lands ~200us after our TX (SIFS 10 + 144us preamble + 48us PLCP) then needs ~112us for the
+  // body -- far past the OFDM-tuned slv_reg16/17 windows (~56us). Without widening, the board
+  // times out and reports no-ACK, so hostapd never finalizes the association AP-side. Latch the
+  // outgoing frame's DSSS-ness at phy_tx_done (is_dsss_tx is still the muxed_tx_end source at that
+  // instant) and hold it through the RECV_ACK window; the next TX re-latches. Widen ONLY for DSSS
+  // TX -- OFDM keeps its exact slv_reg16/17 windows (bit-identical). This replaces the volatile
+  // runtime slv_reg16=0x89C404B0 workaround that proved a full DSSS assoc on 2026-07-02.
+  reg is_dsss_tx_latched;
+  always @(posedge s00_axi_aclk) begin
+    if (!s00_axi_aresetn) is_dsss_tx_latched <= 1'b0;
+    else if (phy_tx_done)  is_dsss_tx_latched <= is_dsss_tx;
+  end
+  // Field units are 0.1us (x COUNT_SCALE=10 -> 100MHz counts). 2500 = 250us sig-valid window,
+  // 1200 = +120us body adjust -- the exact values proven on-air (slv_reg16=0x89C404B0).
+  localparam [14:0] DSSS_RECV_ACK_SIG_VALID_TIMEOUT = 15'd2500;
+  localparam [14:0] DSSS_RECV_ACK_TIMEOUT_ADJ       = 15'd1200;
+  assign recv_ack_timeout_top_adj = (is_dsss_tx_latched ? DSSS_RECV_ACK_TIMEOUT_ADJ : (band==1?slv_reg16[14:0]:slv_reg17[14:0]));
+  assign recv_ack_sig_valid_timeout_top = (is_dsss_tx_latched ? DSSS_RECV_ACK_SIG_VALID_TIMEOUT : (band==1?slv_reg16[30:16]:slv_reg17[30:16]));
   assign recv_ack_fcs_valid_disable = (band==1?(~slv_reg16[31]):(~slv_reg17[31]));
 
   assign fcs_valid = (fcs_in_strobe&fcs_ok);
@@ -602,7 +633,9 @@ module xpu #
     .tx_try_complete(tx_try_complete),
     .retrans_trigger(retrans_trigger),
     .tx_status(tx_status),
+    .is_dsss_rx(is_dsss_rx),
     .ack_tx_flag(ack_tx_flag),
+    .is_dsss_ack(is_dsss_ack),
     .wea(wea),
     .addra(addra),
     .dina(dina),
@@ -819,7 +852,7 @@ xpu_s_axi # (
   .SLV_REG20(slv_reg20),
   .SLV_REG21(slv_reg21),
   .SLV_REG22(slv_reg22),
-  //.SLV_REG23(slv_reg23),
+  .SLV_REG23(slv_reg23),
   //.SLV_REG24(slv_reg24),
   //.SLV_REG25(slv_reg25),
   .SLV_REG26(slv_reg26),

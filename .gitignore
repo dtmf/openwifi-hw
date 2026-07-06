@@ -1,0 +1,53 @@
+# openwifi-hw (dtmf dsss-port fork) .gitignore
+# ---------------------------------------------------------------------------
+# This repo tracks SOURCE only; Vivado regenerates everything else from the
+# board tcls (create_ip_repo.sh / openwifi_ip.tcl / boards/*/*.tcl). Without
+# this file a stray `git add -A` would ingest ~500 MB of generated project.
+#
+# Kept tracked on purpose (do NOT ignore): boards/*/src/system.bd,
+# boards/*/src/system.xdc, boards/*/src/system_top.v, system_wrapper.v,
+# boards/*/*.tcl (set_files.tcl, synth_impl_strategy.tcl, ...), all ip/*/*.tcl,
+# and the hand-written ip/*/src/*.v / *.sv (incl. the vendored dsss_*.sv).
+# ---------------------------------------------------------------------------
+
+# --- generated Vivado project + IP build trees (per board) ---
+boards/*/openwifi_*/
+boards/*/ip_repo/
+boards/*/ip_config/
+
+# --- generated sub-trees under boards/*/src (system.bd/.xdc/system_top.v stay) ---
+boards/*/src/ip/
+boards/*/src/ipshared/
+boards/*/src/sim/
+boards/*/src/synth/
+boards/*/src/hw_handoff/
+boards/*/src/common/
+boards/*/src/hdl/
+boards/*/src/system.bda
+boards/*/src/system.bxml
+boards/*/src/system_ooc.xdc
+
+# --- per-IP files generated at build time by the board tcls (NOT source) ---
+# Surgical by filename so hand-written ip/*/src/*.v / *.sv are never hidden.
+ip/*/src/board_def.v
+ip/*/src/clock_speed.v
+ip/*/src/fpga_scale.v
+ip/*/src/has_side_ch_flag.v
+ip/*/src/openwifi_hw_git_rev.v
+ip/*/src/spi_command.v
+ip/*/src/*_pre_def.v
+
+# --- Vivado / tool logs + scratch ---
+.Xil/
+boards/*/.Xil/
+*.log
+*.jou
+*.str
+*.wdb
+*.pb
+*.backup.log
+*.backup.jou
+
+# --- misc ---
+.gstack/
+.DS_Store

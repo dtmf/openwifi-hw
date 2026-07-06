@@ -69,7 +69,7 @@ close $fd
 # ------------------end of setup ip_repo directory and board files--------------
 
 # --------------------------------generate ip repo------------------------------
-set ip_name_list "openofdm_rx openofdm_tx rx_intf tx_intf xpu side_ch"
+set ip_name_list "openofdm_rx openofdm_tx opendsss_rx opendsss_tx rx_intf tx_intf xpu side_ch"
 # loop and generate all ip
 set i 0
 foreach ip_name $ip_name_list {
@@ -78,7 +78,7 @@ foreach ip_name $ip_name_list {
   set ip_tcl_filename $ip_name\.tcl
   if {[file exists ./ip_config/$ip_name\_pre_def.v]==0} {file mkdir ip_config; exec echo "" > ./ip_config/$ip_name\_pre_def.v}
   exec rm -rf project_1
-  if {$ip_name != "openofdm_rx"} {
+  if {$ip_name != "openofdm_rx" && $ip_name != "opendsss_rx" && $ip_name != "opendsss_tx"} {
     exec cp ./ip_repo/openwifi_hw_git_rev.v ../../ip/$ip_name/src/ -f
     exec cp ./ip_repo/board_def.v ../../ip/$ip_name/src/ -f
     exec cp ./ip_repo/clock_speed.v ../../ip/$ip_name/src/ -f

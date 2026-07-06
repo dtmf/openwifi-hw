@@ -69,7 +69,32 @@ module tx_intf #
   output wire  [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] bram_addr_to_xpu,
   input wire tx_start_from_acc,
   input wire tx_end_from_acc,
-  
+
+  // TX-2d: DSSS transmit integration — exported to the BD (post_script_common.tcl, TX-2f).
+  // Defaults are safe-OFDM: a port stub on is_dsss reads 0, leaving the legacy path intact.
+  output wire is_dsss,                  // latched phy_hdr_config[21]; BD gates openofdm_tx start on this
+  output wire ofdm_phy_tx_start_gated,  // phy_tx_start & ~is_dsss -> openofdm_tx_0/phy_tx_start
+  output wire muxed_tx_started_for_xpu, // is_dsss ? dsss_started : tx_start_from_acc -> xpu_0/side_ch_0 phy_tx_started
+  output wire muxed_tx_end_for_xpu,     // is_dsss ? dsss_done    : tx_end_from_acc   -> xpu_0/side_ch_0 phy_tx_done
+
+  // B-clean (plan D3): the DSSS TX modulator is the external opendsss_tx BD IP cell.
+  // tx_intf feeds it (reset/length/go/ack_mode/sample_ready) and receives its outputs
+  // (bram_rd_addr/sample_i/q/valid/busy/done), which flow into dsss_tx_and_mux where the
+  // dsss_tx instance used to be. The cell taps data_to_acc (BRAM doutb) at the BD.
+  // Unconnected (non-DSSS-TX board / stub upgrade): the cell-result inputs read 0 and
+  // dsss_tx_and_mux stays idle (is_dsss defaults 0), so the OFDM path is bit-identical.
+  output wire        dsss_tx_reset,        // -> opendsss_tx_0/reset
+  output wire [12:0] dsss_tx_length,       // -> opendsss_tx_0/length
+  output wire        dsss_tx_go,           // -> opendsss_tx_0/go
+  output wire        dsss_tx_ack_mode,     // -> opendsss_tx_0/ack_mode
+  output wire        dsss_tx_sample_ready, // -> opendsss_tx_0/sample_ready
+  input  wire [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] dsss_tx_bram_rd_addr, // <- opendsss_tx_0/bram_rd_addr
+  input  wire signed [(IQ_DATA_WIDTH-1):0] dsss_tx_sample_i,  // <- opendsss_tx_0/sample_i
+  input  wire signed [(IQ_DATA_WIDTH-1):0] dsss_tx_sample_q,  // <- opendsss_tx_0/sample_q
+  input  wire        dsss_tx_sample_valid, // <- opendsss_tx_0/sample_valid
+  input  wire        dsss_tx_busy,         // <- opendsss_tx_0/busy
+  input  wire        dsss_tx_done,         // <- opendsss_tx_0/done
+
   // interrupt to PS
   output wire tx_itrpt,
 
@@ -93,6 +118,7 @@ module tx_intf #
   input wire backoff_done,
   input wire tx_bb_is_ongoing,
   input wire ack_tx_flag,
+  input wire is_dsss_ack,           // DSSS unicast-ACK B2: xpu/tx_control -> tx_bit_intf; selects the DSSS ACK path + length=10
   input wire wea_from_xpu,
   input wire [9:0] addra_from_xpu,
   input wire [(C_S00_AXIS_TDATA_WIDTH-1):0] dina_from_xpu,
@@ -244,6 +270,16 @@ module tx_intf #
 
   wire [13:0] send_cts_toself_wait_sifs_top;
 
+  // TX-2d: dsss_tx_and_mux internal nets (per-frame DSSS vs OFDM datapath selection).
+  // is_dsss / ofdm_phy_tx_start_gated / muxed_tx_*_for_xpu are top-level output ports above.
+  wire signed [(IQ_DATA_WIDTH-1):0] dsss_mux_rf_i;
+  wire signed [(IQ_DATA_WIDTH-1):0] dsss_mux_rf_q;
+  wire dsss_mux_rf_iq_valid;
+  wire [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] bram_addr_muxed;
+  wire signed [9:0] bb_gain_muxed;
+  wire signed [(CSI_FUZZER_WIDTH-1):0] bb_gain1_muxed;
+  wire signed [(CSI_FUZZER_WIDTH-1):0] bb_gain2_muxed;
+
   assign iq0_for_check = wifi_iq_pack;
   assign iq1_for_check = 0; //wifi_iq1_pack;
   assign iq_valid_for_check = wifi_iq_ready_delay;
@@ -303,7 +339,9 @@ module tx_intf #
     .dac_ready(dac_ready),
     
     .ant_flag(slv_reg16[1]), //slv_reg16[3:0]: 1: first antenna; 2: second antenna
-    .simple_cdd_flag(slv_reg16[5:4]), 
+    .simple_cdd_flag(slv_reg16[5:4]),
+
+    .is_dsss(is_dsss), // DSSS bw fix: un-pack 2 Barker samples/word -> 40 MSPS real DSSS
 
     .acc_clk(s00_axi_aclk),
     .acc_rstn(s00_axi_aresetn&(~slv_reg0[5])),
@@ -514,12 +552,97 @@ module tx_intf #
     .cts_toself_rf_is_ongoing(cts_toself_rf_is_ongoing),
       
       // to send out to wifi tx module
-    .tx_end_from_acc(tx_end_from_acc),
+    // DSSS-TX-FIX (re-arm): feed the feeder's DO_TX-exit the MUXED done. On a DSSS frame
+    // openofdm_tx is start-gated off so the raw tx_end_from_acc never pulses -> tx_bit_intf
+    // strands in DO_TX, never re-issues phy_tx_start, and wedges the shared TX path after 1
+    // frame. muxed_tx_end_for_xpu = is_dsss ? dsss_done : tx_end_from_acc (OFDM bit-identical;
+    // sequential handshake, no comb loop: the wrapper's own tx_end_from_acc input stays raw).
+    .tx_end_from_acc(muxed_tx_end_for_xpu),
     .bram_data_to_acc(data_to_acc),
-    .bram_addr(bram_addr),
+    .bram_addr(bram_addr_muxed),     // TX-2d: time-muxed port-B addr (dsss_tx prefetch on DSSS, openofdm otherwise)
+    .is_dsss(is_dsss),               // TX-2d: per-frame DSSS selector -> wrapper + exported to BD
+    .is_dsss_ack(is_dsss_ack),       // B2: makes is_dsss follow the received frame's DSSS-ness during an auto-ACK
 
     .tsf_pulse_1M(tsf_pulse_1M)
     );
+
+  // TX-2d: DSSS transmitter + per-frame OFDM/DSSS arbitration mux. Sits between
+  // openofdm_tx (rf_*_from_acc) and tx_iq_intf. On an is_dsss frame it substitutes
+  // the dsss_tx baseband, time-muxes the shared payload BRAM port-B address, gates
+  // openofdm_tx's start (exported port), forces unity bb_gain + zero fuzzer taps, and
+  // re-sources phy_tx_done/started for the BD sibling cells (xpu_0/side_ch_0).
+  // Reset shares tx_iq_intf's soft-reset bit (slv_reg0[3]); dsss_tx only acts on
+  // go = phy_tx_start & is_dsss, so it stays idle on OFDM frames regardless.
+  dsss_tx_and_mux # (
+    .IQ_DATA_WIDTH(IQ_DATA_WIDTH),
+    .CSI_FUZZER_WIDTH(CSI_FUZZER_WIDTH),
+    .WIFI_TX_BRAM_ADDR_WIDTH(WIFI_TX_BRAM_ADDR_WIDTH)
+  ) dsss_tx_and_mux_i (
+    .clk(s00_axis_aclk),
+    .rstn(s00_axis_aresetn&(~slv_reg0[3])),
+
+    .is_dsss(is_dsss),
+    .is_dsss_ack(is_dsss_ack),       // SIFS calib: auto-ACK uses dsss_tx's short lead-in (data keeps full runway)
+    .phy_tx_start(phy_tx_start),
+
+    // OFDM baseband from openofdm_tx (the rf_*_from_acc module inputs)
+    .rf_i_from_acc(rf_i_from_acc),
+    .rf_q_from_acc(rf_q_from_acc),
+    .rf_iq_valid_from_acc(rf_iq_valid_from_acc),
+
+    // downstream pacing + DSSS frame length
+    .tx_hold(tx_hold),
+    .len_psdu(ack_tx_flag ? 13'd10 : slv_reg17[12:0]), // host frame: phy_hdr_config[12:0]; B2 ACK: 10-octet MPDU (FCS-excl). ack_tx_flag visible here, not in the wrapper; harmless on an OFDM ACK (dsss_tx idle when is_dsss=0)
+
+    // shared payload BRAM port B: only openofdm's read address now (the opendsss_tx cell
+    // taps data_to_acc directly at the BD; the DSSS read address comes back from the cell)
+    .ofdm_bram_addr(bram_addr),
+
+    // raw openofdm done/started (NEVER drive these from the muxed outputs — §9.1 loop)
+    .tx_end_from_acc(tx_end_from_acc),
+    .tx_start_from_acc(tx_start_from_acc),
+
+    // global gain / fuzzer regs (slv_reg13 / slv_reg5)
+    .bb_gain_in(slv_reg13[9:0]),
+    .bb_gain1_in(slv_reg5[(CSI_FUZZER_WIDTH-1):0]),
+    .bb_gain2_in(slv_reg5[(10+CSI_FUZZER_WIDTH-1):10]),
+
+    // muxed sample stream -> tx_iq_intf rf_i/rf_q/rf_iq_valid
+    .dsss_mux_rf_i(dsss_mux_rf_i),
+    .dsss_mux_rf_q(dsss_mux_rf_q),
+    .dsss_mux_rf_iq_valid(dsss_mux_rf_iq_valid),
+
+    // muxed BRAM port-B address -> tx_bit_intf_i .bram_addr
+    .bram_addr_muxed(bram_addr_muxed),
+
+    // start gate -> openofdm_tx/phy_tx_start (via BD)
+    .ofdm_phy_tx_start_gated(ofdm_phy_tx_start_gated),
+
+    // done/started mux -> exported to BD for the xpu_0/side_ch_0 re-source
+    .muxed_tx_end(muxed_tx_end_for_xpu),
+    .muxed_tx_started(muxed_tx_started_for_xpu),
+
+    // gain / fuzzer mux -> tx_iq_intf
+    .bb_gain_muxed(bb_gain_muxed),
+    .bb_gain1_muxed(bb_gain1_muxed),
+    .bb_gain2_muxed(bb_gain2_muxed),
+
+    // opendsss_tx BD IP cell interface (B-clean): wired 1:1 to tx_intf top-level ports
+    .dsss_tx_reset(dsss_tx_reset),
+    .dsss_tx_length(dsss_tx_length),
+    .dsss_tx_go(dsss_tx_go),
+    .dsss_tx_ack_mode(dsss_tx_ack_mode),
+    .dsss_tx_sample_ready(dsss_tx_sample_ready),
+    .dsss_tx_bram_rd_addr(dsss_tx_bram_rd_addr),
+    .dsss_tx_sample_i(dsss_tx_sample_i),
+    .dsss_tx_sample_q(dsss_tx_sample_q),
+    .dsss_tx_sample_valid(dsss_tx_sample_valid),
+    .dsss_tx_busy(dsss_tx_busy),
+    .dsss_tx_done(dsss_tx_done),
+
+    // status (unused at top level)
+    .dsss_busy()
+  );
 
   tx_iq_intf # (
     .C_S00_AXIS_TDATA_WIDTH(C_S00_AXIS_TDATA_WIDTH),
@@ -539,15 +662,15 @@ module tx_intf #
     .tx_pkt_iq_to_dac_ongoing(tx_pkt_iq_to_dac_ongoing),
 
     .tx_hold_threshold(slv_reg12[9:0]),
-    .bb_gain(slv_reg13[9:0]),
-    .bb_gain1(slv_reg5[(CSI_FUZZER_WIDTH-1):0]),
-    .bb_gain1_rot90_flag(slv_reg5[9]),
-    .bb_gain2(slv_reg5[(10+CSI_FUZZER_WIDTH-1):10]),
-    .bb_gain2_rot90_flag(slv_reg5[19]),
-    // iq generated by outside wifi tx module
-    .rf_i(rf_i_from_acc),
-    .rf_q(rf_q_from_acc),
-    .rf_iq_valid(rf_iq_valid_from_acc),
+    .bb_gain(bb_gain_muxed),                 // TX-2d: DSSS -> unity 128; OFDM -> slv_reg13[9:0]
+    .bb_gain1(bb_gain1_muxed),               // TX-2d: DSSS -> 0 (fuzzer passthrough); OFDM -> slv_reg5[6:0]
+    .bb_gain1_rot90_flag(slv_reg5[9]),       // unchanged: rot90 of a 0 tap is a no-op on DSSS
+    .bb_gain2(bb_gain2_muxed),               // TX-2d: DSSS -> 0; OFDM -> slv_reg5[16:10]
+    .bb_gain2_rot90_flag(slv_reg5[19]),      // unchanged
+    // iq generated by outside wifi tx module (TX-2d: now via the DSSS/OFDM sample mux)
+    .rf_i(dsss_mux_rf_i),
+    .rf_q(dsss_mux_rf_q),
+    .rf_iq_valid(dsss_mux_rf_iq_valid),
 
     // arbitrary I/Q interface
     .tx_arbitrary_iq_mode(slv_reg7[0]),

@@ -72,6 +72,10 @@ export BOARD_NAME=your_board_name
 ```
 ./get_ip_openofdm_rx.sh
 ```
+* Get the opendsss (802.11b DSSS PHY) into ip directory (only run once after opendsss is updated):
+```
+./get_ip_opendsss.sh
+```
 * Generate ip_repo for the top level FPGA project (will take a while):
 ```
 cd openwifi-hw/boards/$BOARD_NAME/

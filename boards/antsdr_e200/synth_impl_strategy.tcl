@@ -99,6 +99,22 @@ if {[string equal [get_runs -quiet impl_1] ""]} {
   set_property flow "Vivado Implementation 2022" [get_runs impl_1]
 }
 set obj [get_runs impl_1]
+# --- DSSS unicast-ACK timing closure (2026-06-25) -------------------------------
+# The stock Performance_ExplorePostRoutePhysOpt strategy deterministically lands at
+# WNS -0.101 on this 99.4%-full xc7z020 (clk_out1 nav/openofdm_tx logic paths +
+# rx_clk 0-logic-level ad9361 ODDR routing paths). These overrides close BOTH
+# domains to WNS +0.004 / WHS +0.009 (verified 2026-06-25, attempt 1 of the sweep):
+#   place ExtraNetDelay_high  -> net-delay-aware place pulls the routing-dominated
+#                                rx_clk g_tx_data ODDR FFs in (0-level paths)
+#   route Explore             -> GENTLE route; AggressiveExplore route flings the
+#                                0-level ODDR paths to -1.24 (proven harmful here)
+#   post-route phys_opt AggressiveExplore -> squeezes the clk_out1 logic-depth paths
+# Keep with the 2 sample/symbol-paced multicycle constraints in system.xdc.
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE               ExtraNetDelay_high $obj
+set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE              Explore            $obj
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED     1                  $obj
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore  $obj
+# --------------------------------------------------------------------------------
 set_property set_report_strategy_name 1 $obj
 set_property report_strategy {Vivado Implementation Default Reports} $obj
 set_property set_report_strategy_name 0 $obj
@@ -537,7 +553,12 @@ set_property -name "steps.power_opt_design.tcl.post" -value "" -objects $obj
 set_property -name "steps.power_opt_design.args.more options" -value "" -objects $obj
 set_property -name "steps.place_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.place_design.tcl.post" -value "" -objects $obj
-set_property -name "steps.place_design.args.directive" -value "Explore" -objects $obj
+# 2026-06-29 (Farrow RX build): this lowercase GUI block runs AFTER the uppercase STEPS.* overrides
+# near line 113 and was silently clobbering them back to Explore (verified: last build ran
+# `place_design -directive Explore`). Restore the intended route-delay-aware place directive here so
+# it actually takes effect -- ExtraNetDelay_high targets the 77%-route-dominated congestion paths
+# (tx_iq rf_q_tmp, etc.) the Farrow's +3556 LUT pushed negative on the 99.9%-slice-full xc7z020.
+set_property -name "steps.place_design.args.directive" -value "ExtraNetDelay_high" -objects $obj
 set_property -name "steps.place_design.args.more options" -value "" -objects $obj
 set_property -name "steps.post_place_power_opt_design.is_enabled" -value "0" -objects $obj
 set_property -name "steps.post_place_power_opt_design.tcl.pre" -value "" -objects $obj
@@ -546,7 +567,11 @@ set_property -name "steps.post_place_power_opt_design.args.more options" -value 
 set_property -name "steps.phys_opt_design.is_enabled" -value "1" -objects $obj
 set_property -name "steps.phys_opt_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.phys_opt_design.tcl.post" -value "" -objects $obj
-set_property -name "steps.phys_opt_design.args.directive" -value "Explore" -objects $obj
+# 2026-06-29 (Farrow RX build, placement sweep): bump PRE-route phys_opt Explore -> AggressiveExplore
+# to pull the route-dominated congestion-tail cells (openofdm_tx bits_ram, ad9361 dac/adc) closer
+# before routing locks them in. Last build closed everything but a -0.059 ns scattered tail on the
+# 99.9%-full part; this is the pre-route counterpart to the post-route AggressiveExplore below.
+set_property -name "steps.phys_opt_design.args.directive" -value "AggressiveExplore" -objects $obj
 set_property -name "steps.phys_opt_design.args.more options" -value "" -objects $obj
 set_property -name "steps.route_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.route_design.tcl.post" -value "" -objects $obj
@@ -555,7 +580,11 @@ set_property -name "steps.route_design.args.more options" -value "-tns_cleanup" 
 set_property -name "steps.post_route_phys_opt_design.is_enabled" -value "1" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.tcl.post" -value "" -objects $obj
-set_property -name "steps.post_route_phys_opt_design.args.directive" -value "Explore" -objects $obj
+# 2026-06-29 (Farrow RX build): restore the intended post-route phys_opt directive (clobbered like
+# place above). AggressiveExplore squeezes the remaining clk_out1 setup paths after route. NOTE the
+# ROUTE directive stays Explore on purpose -- AggressiveExplore *route* flings the rx_clk 0-level
+# ODDR paths to -1.24 (documented harmful, line ~108). Only place + post-route-physopt change.
+set_property -name "steps.post_route_phys_opt_design.args.directive" -value "AggressiveExplore" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.args.more options" -value "" -objects $obj
 set_property -name "steps.write_bitstream.tcl.pre" -value "" -objects $obj
 set_property -name "steps.write_bitstream.tcl.post" -value "" -objects $obj

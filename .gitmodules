@@ -4,3 +4,6 @@
 [submodule "ip/openofdm_rx"]
 	path = ip/openofdm_rx
 	url = https://github.com/open-sdr/openofdm.git
+[submodule "ip/opendsss"]
+	path = ip/opendsss
+	url = https://github.com/dtmf/opendsss.git

@@ -75,5 +75,7 @@ done
 source $XILINX_ENV_FILE
 
 set -x
-vivado -source ../ip_repo_gen.tcl
+# -mode batch: run headless. Stock line was "vivado -source ..." which defaults to
+# GUI mode (pops a window); for automated/background builds we want batch.
+vivado -mode batch -source ../ip_repo_gen.tcl
 set +x

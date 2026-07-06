@@ -236,12 +236,16 @@ set files [list \
  "[file normalize "$origin_dir/src/edge_to_flip.v"]"\
  "[file normalize "$origin_dir/src/csi_fuzzer.v"]"\
  "[file normalize "$origin_dir/src/tx_status_fifo.v"]"\
+ "[file normalize "$origin_dir/src/dsss_tx_and_mux.sv"]"\
  "[file normalize "$origin_dir/src/tx_intf.v"]"\
 ]
+# B-clean (plan D3): the DSSS modulator (dsss_tx + dsss_crc/dsss_plcp_crc) moved to the
+# first-class opendsss_tx IP (ip/opendsss_tx, sourced from the opendsss submodule).
+# Only the arbiter/mux dsss_tx_and_mux.sv stays here.
 add_files -norecurse -fileset $obj $files
-
-# Set 'sources_1' fileset file properties for local files
-# None
+# DSSS TX core is SystemVerilog; tag explicitly so packaging never mis-detects file type.
+set_property file_type SystemVerilog [get_files -of_objects $obj [list \
+ "$origin_dir/src/dsss_tx_and_mux.sv"]]
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]

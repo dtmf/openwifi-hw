@@ -57,6 +57,7 @@
         input wire cts_toself_bb_is_ongoing,//this should rise before the phy tx end valid of phy tx IP core.
         `DEBUG_PREFIX input wire backoff_done,
         input wire [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] bram_addr,
+        input wire is_dsss_rx,   // DSSS unicast-ACK B2: the received frame is 1 Mbps DSSS -> emit a DSSS ACK (from rx_intf via the BD)
 
         input wire ampdu_rx_tid_disable,
         input wire [3:0] ampdu_rx_tid,
@@ -84,6 +85,7 @@
         `DEBUG_PREFIX output reg tx_try_complete,
         `DEBUG_PREFIX output reg [79:0] tx_status,
         `DEBUG_PREFIX output reg ack_tx_flag,
+        `DEBUG_PREFIX output reg is_dsss_ack,  // DSSS unicast-ACK B2: held from is_dsss_rx across PREP_ACK/SEND_DFL_ACK; routes the ACK to dsss_tx
         `DEBUG_PREFIX output reg wea,
         `DEBUG_PREFIX output reg [9:0] addra,
         output reg [(C_S00_AXIS_TDATA_WIDTH-1):0] dina
@@ -101,6 +103,7 @@
   `DEBUG_PREFIX reg [3:0] num_retrans;
   `DEBUG_PREFIX reg [14:0] ack_timeout_count;
   `DEBUG_PREFIX reg [2:0] send_ack_count;
+  `DEBUG_PREFIX reg [1:0] dsss_ack_wr_cnt;  // DSSS unicast-ACK B2: paces the 2-word port-A write of the ACK MPDU into BRAM during PREP_ACK
   reg [47:0] ack_addr;
   reg signed [15:0] duration_received;
   reg signed [15:0] duration_standard;
@@ -209,6 +212,8 @@
           ack_addr <=0;
           send_ack_count <= 0;
           ack_tx_flag<=0;
+          is_dsss_ack<=0;
+          dsss_ack_wr_cnt<=0;
           tx_control_state  <= IDLE;
           tx_control_state_old <= IDLE;
           tx_try_complete<=0;
@@ -278,6 +283,8 @@
         case (tx_control_state)
           IDLE: begin
             ack_tx_flag<=0;
+            is_dsss_ack<=0;          // B2: cleared each IDLE cycle; re-latched from is_dsss_rx on the ACK-decision arm below
+            dsss_ack_wr_cnt<=0;      // B2: reset the ACK-MPDU port-A write sequencer
             wea<=0;
             addra<=0;
             dina<=0;
@@ -348,6 +355,13 @@
                       blk_ack_bitmap_mem[SC_seq_num[6:0]] <= 1'b1;
                   end else begin
                       send_ack_wait_top_scale_lock <= send_ack_wait_top_scale;
+                      // B2: latch the received frame's DSSS-ness for this ACK (held through PREP_ACK/SEND_DFL_ACK).
+                      // Force 0 for the block-ack/aggregate path (is_blockackreq or rx_ht_aggr): that routes to
+                      // SEND_BLK_ACK which needs a multi-word (2..5) MPDU, but the Option-A writer only writes
+                      // words 2,3 (a 10-byte normal-ACK). 11b/DSSS never aggregates, so this only falls a
+                      // pathological DSSS-BlockAckReq back to a legacy OFDM block-ack (safe) instead of TXing a
+                      // malformed DSSS frame. Normal DSSS data/mgmt ACK: is_blockackreq=rx_ht_aggr=0 -> unaffected.
+                      is_dsss_ack <= ((ack_tx_disable || is_blockackreq || rx_ht_aggr) ? 1'b0 : is_dsss_rx);
                       tx_control_state  <= (ack_tx_disable?tx_control_state:PREP_ACK); //we also send cts (if rts is received) in PREP_ACK status
                   end
               end
@@ -407,6 +421,22 @@
               tx_control_state  <= IDLE;
             end else begin
               ack_tx_flag<=1;
+
+              // B2 Option A (DSSS ACK only): write the 10-byte ACK MPDU into REAL BRAM words 2,3 via
+              // port A, a few cycles into the SIFS wait. By now FC_type_new/FC_subtype_new/duration_new
+              // (assigned on the first PREP_ACK cycle) and ack_addr (latched in IDLE) have settled, and
+              // start_tx_ack does not pulse until ack_timeout_count reaches send_ack_wait_top_scale_lock
+              // (~hundreds of cycles), so both writes commit long before `go`. dsss_tx then reads these
+              // words over port B during T_PAYLOAD. Same {addr,dur,FC} packing as the OFDM ACK at :472/:474.
+              // For OFDM (is_dsss_ack=0) this is inert: wea stays 0 and the legacy read-substitution stands.
+              if (is_dsss_ack) begin
+                if (dsss_ack_wr_cnt != 2'd3) dsss_ack_wr_cnt <= dsss_ack_wr_cnt + 2'd1;
+                case (dsss_ack_wr_cnt)
+                  2'd1: begin wea<=1'b1; addra<=10'd2; dina<={ack_addr[31:0], duration_new, 8'd0, FC_subtype_new, FC_type_new, 2'd0}; end
+                  2'd2: begin wea<=1'b1; addra<=10'd3; dina<={48'h0, ack_addr[47:32]}; end
+                  default: wea<=1'b0;
+                endcase
+              end
               // ack_addr <= ack_addr;
               // tx_try_complete<=tx_try_complete;
               // tx_status<=tx_status; //maintain status from state RECV_ACK for ARM reading

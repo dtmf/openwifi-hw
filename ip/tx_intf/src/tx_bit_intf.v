@@ -82,6 +82,8 @@
 	    output wire [(WIFI_TX_BRAM_DATA_WIDTH-1):0] bram_data_to_acc,
       input wire  [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] bram_addr,
 
+      output wire is_dsss,   // TX-2a: per-frame DSSS selector = phy_hdr_config_current[21] (latched in PREPARE_TX_FETCH)
+      input  wire is_dsss_ack, // DSSS unicast-ACK B2: when ack_tx_flag, is_dsss follows is_dsss_ack (the received frame's DSSS-ness) instead of the stale last-host-TX [21]
       input wire tsf_pulse_1M
 	);
     
@@ -226,6 +228,7 @@
     assign use_ht_rate = phy_hdr_config_current[15];
     assign rate_hw_value = phy_hdr_config_current[19:16];
     assign ht_aggr_start = phy_hdr_config_current[20];
+    assign is_dsss       = ack_tx_flag ? is_dsss_ack : phy_hdr_config_current[21];   // TX-2a host-frame select [21]; B2: an auto-ACK follows is_dsss_ack so a DSSS RX -> DSSS ACK (vs the stale last-host-TX bit)
 
     assign l_sig_data = {len_legacy, 1'b0, (use_ht_rate == 0 ? rate_legacy : 4'd11)};
     assign l_sig_parity = ^l_sig_data;
@@ -242,10 +245,14 @@
     assign start = ( (auto_start_mode==1'b0)?(1'b0): (start_delay0|start_delay1|start_delay2|start_delay3|start_delay4|start_delay5) );
 
     assign wea_high = (read_from_s_axis_en&emptyn_from_s_axis);
-    assign wea = ( (retrans_in_progress)?wea_from_xpu:wea_internal );
-    assign addra = ( (retrans_in_progress)?addra_from_xpu:addra_internal );
-    assign dina = ( (retrans_in_progress)?dina_from_xpu:dina_internal );
-    assign bram_data_to_acc = (ack_tx_flag? dina_from_xpu:bram_data_to_acc_int);
+    // B2 Option A: a DSSS auto-ACK also routes xpu's port-A write to BRAM (retrans_in_progress is 0
+    // during an ACK), so tx_control can write the 10-byte ACK MPDU into words 2,3 of real BRAM.
+    assign wea = ( (retrans_in_progress | (ack_tx_flag & is_dsss_ack))?wea_from_xpu:wea_internal );
+    assign addra = ( (retrans_in_progress | (ack_tx_flag & is_dsss_ack))?addra_from_xpu:addra_internal );
+    assign dina = ( (retrans_in_progress | (ack_tx_flag & is_dsss_ack))?dina_from_xpu:dina_internal );
+    // B2: a DSSS ACK reads REAL bram (dsss_tx walks port B over the freshly-written words 2,3); the
+    // OFDM ACK keeps the frozen-pointer read-substitution (dina_from_xpu) exactly as before.
+    assign bram_data_to_acc = ((ack_tx_flag & ~is_dsss_ack)? dina_from_xpu:bram_data_to_acc_int);
     
     assign s_axis_recv_data_from_high_valid = ( ((s_axis_recv_data_from_high==0) && (s_axis_recv_data_from_high_delay==1))?1:0 );
     

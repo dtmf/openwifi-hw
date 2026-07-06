@@ -235,9 +235,16 @@ set files [list \
  "[file normalize "$origin_dir/src/rx_intf_s_axi.v"]"\
  "[file normalize "$origin_dir/src/rx_iq_intf.v"]"\
  "[file normalize "$origin_dir/src/edge_to_flip.v"]"\
+ "[file normalize "$origin_dir/src/dsss_rx_and_mux.sv"]"\
  "[file normalize "$origin_dir/src/rx_intf.v"]"\
 ]
+# B-clean (plan D3): the DSSS RX PHY (dsss_rx_fb + its 10 submodules) moved to the
+# first-class opendsss_rx IP (ip/opendsss_rx, sourced from the opendsss submodule).
+# Only the arbiter/mux dsss_rx_and_mux.sv stays here.
 add_files -norecurse -fileset $obj $files
+# DSSS RX core is SystemVerilog; tag explicitly so packaging never mis-detects file type.
+set_property file_type SystemVerilog [get_files -of_objects $obj [list \
+ "$origin_dir/src/dsss_rx_and_mux.sv"]]
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]

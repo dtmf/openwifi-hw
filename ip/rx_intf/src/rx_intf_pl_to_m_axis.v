@@ -50,9 +50,11 @@
 
 	    // start m_axis trans mode
       input wire m_axis_tlast_auto_recover_enable,
-      input wire [12:0] m_axis_tlast_auto_recover_timeout_top,
+      input wire [15:0] m_axis_tlast_auto_recover_timeout_top,
 	    input wire [2:0] start_1trans_mode,
 	    input wire start_1trans_ext_trigger,
+	    // [15:0] (widened from [12:0]): slow 1Mbps DSSS frames up to 1700B need a
+	    // ~13.6ms auto-recover top, which does not fit the old 13-bit 8191us cap.
 
 	    input wire src_sel,
 	    input wire [(TSF_TIMER_WIDTH-1):0]  tsf_runtime_val,
@@ -100,7 +102,7 @@
 
     reg [14:0] count;
 
-    reg [12:0] timeout_timer_1M;
+    reg [15:0] timeout_timer_1M; // widened 13->16b (see timeout_top port comment)
 
     reg s2mm_intr_reg;
 

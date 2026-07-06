@@ -71,6 +71,45 @@ module rx_intf #
   input  wire fcs_in_strobe,
   input  wire fcs_ok,
   input wire signed [31:0] phase_offset_taken,
+  input  wire demod_is_ongoing, // openofdm_rx OFDM-RX-in-progress (asserts at the long preamble, before the header); gates/preempts DSSS in dsss_rx_and_mux
+
+  // -------- Merged (OFDM|DSSS) RX decode bus exported to xpu (DSSS unicast-ACK B1) --------
+  // dsss_rx_and_mux already arbitrates OFDM vs DSSS into ONE openofdm-format signal set
+  // (the internal m_* wires that feed the byte/header/DMA path). These outputs expose that
+  // SAME merged bus so xpu's phy_rx_parse + tx_control auto-ACK trigger can SEE a received
+  // DSSS frame (today xpu reads openofdm_rx directly via the BD and never sees DSSS). When
+  // no DSSS frame is active the merged bus is COMBINATIONALLY IDENTICAL to openofdm_rx, so
+  // re-pointing xpu's decode inputs here leaves the OFDM path bit-identical. The BD re-source
+  // (post_script_common.tcl DSSS-ACK-RX block) detaches xpu's decode pins from openofdm_rx_0
+  // and drives them from these.
+  output wire        pkt_header_valid_to_xpu,
+  output wire        pkt_header_valid_strobe_to_xpu,
+  output wire        ht_unsupport_to_xpu,
+  output wire [7:0]  pkt_rate_to_xpu,
+  output wire [15:0] pkt_len_to_xpu,
+  output wire        ht_aggr_to_xpu,
+  output wire        ht_aggr_last_to_xpu,
+  output wire        byte_in_strobe_to_xpu,
+  output wire [7:0]  byte_in_to_xpu,
+  output wire [15:0] byte_count_to_xpu,
+  output wire        fcs_in_strobe_to_xpu,
+  output wire        fcs_ok_to_xpu,
+  output wire        is_dsss_rx,   // = dsss_active: 1 while a received DSSS frame owns the RX decode bus
+
+  // -------- B-clean (plan D3): the DSSS RX PHY is the external opendsss_rx BD IP cell --------
+  // rx_intf exports the DSSS enable to drive the cell and imports the cell's decode bus,
+  // which feeds dsss_rx_and_mux where the internal dsss_rx_fb instance used to be. The
+  // baseband samples reach the cell by a BD-level tap of sample0/sample_strobe (no new
+  // port). Unconnected (non-DSSS board / stub upgrade): decode inputs read 0 -> the
+  // arbiter never grants DSSS -> OFDM path bit-identical.
+  output wire        dsss_enable_out,        // = ~slv_reg5[17]     -> opendsss_rx_0/enable
+  input  wire [12:0] dsss_phy_params_length, // <- opendsss_rx_0/params_length
+  input  wire        dsss_phy_params_valid,  // <- opendsss_rx_0/params_valid
+  input  wire [7:0]  dsss_phy_data,          // <- opendsss_rx_0/data
+  input  wire        dsss_phy_data_valid,    // <- opendsss_rx_0/data_valid
+  input  wire        dsss_phy_framer_done,   // <- opendsss_rx_0/framer_done
+  input  wire        dsss_phy_crc_correct,   // <- opendsss_rx_0/crc_correct
+  input  wire [31:0] dsss_phy_fcs_out,       // <- opendsss_rx_0/fcs_out
 
   // led
   output wire fcs_ok_led,
@@ -223,6 +262,32 @@ module rx_intf #
 
   wire rx_pkt_sn_plus_one;
 
+  // ---- 802.11b DSSS RX (Phase 2): dsss_rx_and_mux runs the DSSS receiver on the
+  //      same 20 MSPS sample feed as openofdm_rx and muxes its decoded frame into
+  //      the existing byte/header/DMA path with strict OFDM priority. The arbiter
+  //      gates and preempts DSSS using openofdm_rx's demod_is_ongoing, a NEW rx_intf
+  //      input port wired in from the block design (openofdm_rx_0/demod_is_ongoing ->
+  //      rx_intf_0/demod_is_ongoing) -> needs a one-time block-design regeneration;
+  //      DSSS is enabled by default;
+  //      set slv_reg5[17] to disable (active-low so the stock driver's write keeps it on).
+  wire        dsss_enable = ~slv_reg5[17];
+  wire        dsss_active;
+  assign      dsss_enable_out = dsss_enable;   // B-clean: drive opendsss_rx_0/enable
+  wire        m_pkt_header_valid;
+  wire        m_pkt_header_valid_strobe;
+  wire        m_ht_unsupport;
+  wire [7:0]  m_pkt_rate;
+  wire [15:0] m_pkt_len;
+  wire        m_ht_aggr;
+  wire        m_ht_aggr_last;
+  wire        m_ht_sgi;
+  wire [7:0]  m_byte_in;
+  wire        m_byte_in_strobe;
+  wire [15:0] m_byte_count;
+  wire        m_fcs_in_strobe;
+  wire        m_fcs_ok;
+  wire signed [31:0] m_phase_offset_taken;
+
   // -------------debug purpose----------------
   assign trigger_out0 = slv_reg1[0];
   assign trigger_out1 = slv_reg1[1];
@@ -236,17 +301,34 @@ module rx_intf #
 
   assign sample0 = {rf_i0_to_acc,rf_q0_to_acc};
   assign sample1 = {rf_i1_to_acc,rf_q1_to_acc};
-  assign fcs_valid = (fcs_in_strobe&fcs_ok);
-  assign fcs_invalid = (fcs_in_strobe&(~fcs_ok));
-  assign sig_valid = (pkt_header_valid_strobe&pkt_header_valid);
-  assign sig_invalid = (pkt_header_valid_strobe&(~pkt_header_valid));
+  assign fcs_valid = (m_fcs_in_strobe&m_fcs_ok);
+  assign fcs_invalid = (m_fcs_in_strobe&(~m_fcs_ok));
+  assign sig_valid = (m_pkt_header_valid_strobe&m_pkt_header_valid);
+  assign sig_invalid = (m_pkt_header_valid_strobe&(~m_pkt_header_valid));
+
+  // ---- Merged RX decode bus -> xpu (DSSS unicast-ACK B1). Same m_* the byte/DMA path uses;
+  //      combinationally == openofdm_rx inputs when no DSSS frame is active (sel=0 passthrough
+  //      in dsss_rx_and_mux), so the OFDM auto-ACK path is unchanged. ----
+  assign pkt_header_valid_to_xpu        = m_pkt_header_valid;
+  assign pkt_header_valid_strobe_to_xpu = m_pkt_header_valid_strobe;
+  assign ht_unsupport_to_xpu            = m_ht_unsupport;
+  assign pkt_rate_to_xpu                = m_pkt_rate;
+  assign pkt_len_to_xpu                 = m_pkt_len;
+  assign ht_aggr_to_xpu                 = m_ht_aggr;
+  assign ht_aggr_last_to_xpu            = m_ht_aggr_last;
+  assign byte_in_strobe_to_xpu          = m_byte_in_strobe;
+  assign byte_in_to_xpu                 = m_byte_in;
+  assign byte_count_to_xpu              = m_byte_count;
+  assign fcs_in_strobe_to_xpu           = m_fcs_in_strobe;
+  assign fcs_ok_to_xpu                  = m_fcs_ok;
+  assign is_dsss_rx                     = dsss_active;
 
   assign m00_axis_tvalid = m00_axis_tvalid_inner;
   assign m00_axis_tdata  = m00_axis_tdata_inner;
   assign m00_axis_tstrb  = m00_axis_tstrb_inner;
   assign m00_axis_tlast  = (m00_axis_tlast_inner|m00_axis_tlast_auto_recover);
 
-  assign fcs_valid_internal = (slv_reg5[3]==0?fcs_valid:fcs_in_strobe);
+  assign fcs_valid_internal = (slv_reg5[3]==0?fcs_valid:m_fcs_in_strobe);
   assign rx_pkt_intr = (slv_reg2[8]==0?intr_internal:slv_reg2[0]);
   
   assign intr_internal = (slv_reg2[12]==0?rx_pkt_intr_internal:fcs_valid_internal);
@@ -266,6 +348,8 @@ module rx_intf #
   assign bw20_iq_valid = (slv_reg3[8]?iq_valid_from_tx_intf:data_to_bb_valid);
 
   assign slv_reg31[31] = 1'b0; // 0 to indicate this old rx_intf and openofdm_rx support a/g/n
+  assign slv_reg31[30:1] = 30'd0;
+  assign slv_reg31[0] = 1'b1; // capability: this rx_intf integrates the 802.11b DSSS RX (Phase 2)
   
 // ---------------------------fro mute_adc_out_to_bb control from acc domain to adc domain-------------------------------------
   xpm_cdc_array_single #(
@@ -301,7 +385,7 @@ module rx_intf #
   edge_to_flip edge_to_flip_fcs_ok_i (
       .clk(m00_axis_aclk),
       .rstn(m00_axis_aresetn),
-      .data_in(fcs_ok),
+      .data_in(m_fcs_ok),
       .flip_output(fcs_ok_led)
   );
 `endif
@@ -420,17 +504,71 @@ module rx_intf #
     .wifi_rx_iq_fifo_emptyn(wifi_rx_iq_fifo_emptyn)
   );
 
+  // 802.11b DSSS RX + OFDM/DSSS arbiter (Phase 2). Taps the same 20 MSPS sample
+  // feed (rf_i0/q0_to_acc + sample_strobe) that drives openofdm_rx, and produces a
+  // single muxed openofdm-style signal set (m_*) for the byte/header/DMA path below.
+  dsss_rx_and_mux dsss_rx_and_mux_i (
+    .clk(m00_axis_aclk),
+    .rstn(m00_axis_aresetn),
+    .dsss_enable(dsss_enable),
+
+    // DSSS PHY decode bus from the opendsss_rx BD IP cell (B-clean, plan D3).
+    // dsss_rx_fb moved OUT to opendsss_rx_0; it taps sample0/sample_strobe at the BD.
+    .d_params_length(dsss_phy_params_length),
+    .d_params_valid(dsss_phy_params_valid),
+    .d_data(dsss_phy_data),
+    .d_data_valid(dsss_phy_data_valid),
+    .d_framer_done(dsss_phy_framer_done),
+    .d_crc_correct(dsss_phy_crc_correct),
+    .d_fcs_out(dsss_phy_fcs_out),
+
+    // OFDM path from openofdm_rx (rx_intf input ports)
+    .ofdm_pkt_header_valid(pkt_header_valid),
+    .ofdm_pkt_header_valid_strobe(pkt_header_valid_strobe),
+    .ofdm_ht_unsupport(ht_unsupport),
+    .ofdm_pkt_rate(pkt_rate),
+    .ofdm_pkt_len(pkt_len),
+    .ofdm_ht_aggr(ht_aggr),
+    .ofdm_ht_aggr_last(ht_aggr_last),
+    .ofdm_ht_sgi(ht_sgi),
+    .ofdm_byte_in(byte_in),
+    .ofdm_byte_in_strobe(byte_in_strobe),
+    .ofdm_byte_count(byte_count),
+    .ofdm_fcs_in_strobe(fcs_in_strobe),
+    .ofdm_fcs_ok(fcs_ok),
+    .ofdm_phase_offset_taken(phase_offset_taken),
+    .ofdm_early_active(demod_is_ongoing),
+
+    // muxed result -> byte_to_word_fcs_sn_insert + rx_intf_pl_to_m_axis
+    .pkt_header_valid(m_pkt_header_valid),
+    .pkt_header_valid_strobe(m_pkt_header_valid_strobe),
+    .ht_unsupport(m_ht_unsupport),
+    .pkt_rate(m_pkt_rate),
+    .pkt_len(m_pkt_len),
+    .ht_aggr(m_ht_aggr),
+    .ht_aggr_last(m_ht_aggr_last),
+    .ht_sgi(m_ht_sgi),
+    .byte_in(m_byte_in),
+    .byte_in_strobe(m_byte_in_strobe),
+    .byte_count(m_byte_count),
+    .fcs_in_strobe(m_fcs_in_strobe),
+    .fcs_ok(m_fcs_ok),
+    .phase_offset_taken(m_phase_offset_taken),
+
+    .dsss_active(dsss_active)
+  );
+
   byte_to_word_fcs_sn_insert byte_to_word_fcs_sn_insert_inst (
     .clk(m00_axis_aclk),
-    .rstn(m00_axis_aresetn&(~slv_reg0[7])&(~pkt_header_valid_strobe)),
+    .rstn(m00_axis_aresetn&(~slv_reg0[7])&(~m_pkt_header_valid_strobe)),
     .rstn_sn(m00_axis_aresetn&(~slv_reg0[7])),
 
-    .byte_in(byte_in),
-    .byte_in_strobe(byte_in_strobe),
-    .byte_count(byte_count),
-    .num_byte(pkt_len),
-    .fcs_in_strobe(fcs_in_strobe),
-    .fcs_ok(fcs_ok),
+    .byte_in(m_byte_in),
+    .byte_in_strobe(m_byte_in_strobe),
+    .byte_count(m_byte_count),
+    .num_byte(m_pkt_len),
+    .fcs_in_strobe(m_fcs_in_strobe),
+    .fcs_ok(m_fcs_ok),
     .rx_pkt_sn_plus_one(rx_pkt_sn_plus_one),
 
     .word_out(data_from_acc),
@@ -471,7 +609,7 @@ module rx_intf #
     .rx_pkt_sn_plus_one(rx_pkt_sn_plus_one),
 
     .m_axis_tlast_auto_recover_enable(~slv_reg12[31]),
-    .m_axis_tlast_auto_recover_timeout_top(slv_reg12[12:0]),
+    .m_axis_tlast_auto_recover_timeout_top(slv_reg12[15:0]),// widened 13->16b for slow 1Mbps DSSS frames (reg12[30:13] were unused; bit31 stays enable)
     .start_1trans_mode(slv_reg5[2:0]),
     .start_1trans_ext_trigger(slv_reg6[0]),
     .src_sel(slv_reg7[0]),
@@ -483,15 +621,15 @@ module rx_intf #
 
     .data_from_acc(data_from_acc),
     .data_ready_from_acc(data_ready_from_acc),
-    .pkt_rate(pkt_rate),
-    .pkt_len(pkt_len),
+    .pkt_rate(m_pkt_rate),
+    .pkt_len(m_pkt_len),
     .sig_valid(sig_valid),
-    .ht_aggr(ht_aggr),
-    .ht_aggr_last(ht_aggr_last),
-    .ht_sgi(ht_sgi),
-    .ht_unsupport(ht_unsupport),
+    .ht_aggr(m_ht_aggr),
+    .ht_aggr_last(m_ht_aggr_last),
+    .ht_sgi(m_ht_sgi),
+    .ht_unsupport(m_ht_unsupport),
     .fcs_valid(fcs_valid),
-    .phase_offset_taken(phase_offset_taken),
+    .phase_offset_taken(m_phase_offset_taken),
     
     .rf_iq(rf_iq_loopback),
     .rf_iq_valid(sample_strobe),

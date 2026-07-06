@@ -1,12 +1,13 @@
 {
   "design": {
     "design_info": {
-      "boundary_crc": "0x4EC27B2EB49B7022",
+      "boundary_crc": "0x4EC27B2E00F77C6C",
       "device": "xc7z020clg400-1",
       "name": "system",
       "rev_ctrl_bd_flag": "RevCtrlBdOff",
       "synth_flow_mode": "None",
-      "tool_version": "2022.2"
+      "tool_version": "2022.2",
+      "validated": "true"
     },
     "design_tree": {
       "sys_ps7": "",
@@ -430,7 +431,17 @@
         "right": "0"
       },
       "otg_vbusoc": {
-        "direction": "I"
+        "direction": "I",
+        "parameters": {
+          "PortType": {
+            "value": "undef",
+            "value_src": "ip_prop"
+          },
+          "PortType.PROP_SRC": {
+            "value": "false",
+            "value_src": "ip_prop"
+          }
+        }
       },
       "enable": {
         "direction": "O"
@@ -4504,21 +4515,18 @@
           "openofdm_rx_0_byte_count": {
             "ports": [
               "openofdm_rx_0/byte_count",
-              "xpu_0/byte_count",
               "rx_intf_0/byte_count"
             ]
           },
           "openofdm_rx_0_byte_out": {
             "ports": [
               "openofdm_rx_0/byte_out",
-              "xpu_0/byte_in",
               "rx_intf_0/byte_in"
             ]
           },
           "openofdm_rx_0_byte_out_strobe": {
             "ports": [
               "openofdm_rx_0/byte_out_strobe",
-              "xpu_0/byte_in_strobe",
               "rx_intf_0/byte_in_strobe"
             ]
           },
@@ -4538,7 +4546,8 @@
             "ports": [
               "openofdm_rx_0/demod_is_ongoing",
               "xpu_0/demod_is_ongoing",
-              "side_ch_0/demod_is_ongoing"
+              "side_ch_0/demod_is_ongoing",
+              "rx_intf_0/demod_is_ongoing"
             ]
           },
           "openofdm_rx_0_equalizer": {
@@ -4556,7 +4565,6 @@
           "openofdm_rx_0_fcs_ok": {
             "ports": [
               "openofdm_rx_0/fcs_ok",
-              "xpu_0/fcs_ok",
               "side_ch_0/fcs_ok",
               "rx_intf_0/fcs_ok"
             ]
@@ -4564,7 +4572,6 @@
           "openofdm_rx_0_fcs_out_strobe": {
             "ports": [
               "openofdm_rx_0/fcs_out_strobe",
-              "xpu_0/fcs_in_strobe",
               "side_ch_0/fcs_in_strobe",
               "rx_intf_0/fcs_in_strobe",
               "tx_intf_0/fcs_in_strobe"
@@ -4573,15 +4580,13 @@
           "openofdm_rx_0_ht_aggr": {
             "ports": [
               "openofdm_rx_0/ht_aggr",
-              "rx_intf_0/ht_aggr",
-              "xpu_0/rx_ht_aggr"
+              "rx_intf_0/ht_aggr"
             ]
           },
           "openofdm_rx_0_ht_aggr_last": {
             "ports": [
               "openofdm_rx_0/ht_aggr_last",
-              "rx_intf_0/ht_aggr_last",
-              "xpu_0/rx_ht_aggr_last"
+              "rx_intf_0/ht_aggr_last"
             ]
           },
           "openofdm_rx_0_ht_sgi": {
@@ -4593,7 +4598,6 @@
           "openofdm_rx_0_ht_unsupport": {
             "ports": [
               "openofdm_rx_0/ht_unsupport",
-              "xpu_0/ht_unsupport",
               "side_ch_0/ht_unsupport",
               "rx_intf_0/ht_unsupport"
             ]
@@ -4638,7 +4642,6 @@
           "openofdm_rx_0_pkt_header_valid": {
             "ports": [
               "openofdm_rx_0/pkt_header_valid",
-              "xpu_0/pkt_header_valid",
               "side_ch_0/pkt_header_valid",
               "rx_intf_0/pkt_header_valid"
             ]
@@ -4646,7 +4649,6 @@
           "openofdm_rx_0_pkt_header_valid_strobe": {
             "ports": [
               "openofdm_rx_0/pkt_header_valid_strobe",
-              "xpu_0/pkt_header_valid_strobe",
               "side_ch_0/pkt_header_valid_strobe",
               "rx_intf_0/pkt_header_valid_strobe"
             ]
@@ -4654,7 +4656,6 @@
           "openofdm_rx_0_pkt_len": {
             "ports": [
               "openofdm_rx_0/pkt_len",
-              "xpu_0/pkt_len",
               "side_ch_0/pkt_len",
               "rx_intf_0/pkt_len"
             ]
@@ -4662,7 +4663,6 @@
           "openofdm_rx_0_pkt_rate": {
             "ports": [
               "openofdm_rx_0/pkt_rate",
-              "xpu_0/pkt_rate",
               "side_ch_0/pkt_rate",
               "rx_intf_0/pkt_rate",
               "xlslice_2/Din"
@@ -4735,16 +4735,12 @@
           "phy_tx_0_phy_tx_done": {
             "ports": [
               "openofdm_tx_0/phy_tx_done",
-              "xpu_0/phy_tx_done",
-              "side_ch_0/phy_tx_done",
               "tx_intf_0/tx_end_from_acc"
             ]
           },
           "phy_tx_0_phy_tx_started": {
             "ports": [
               "openofdm_tx_0/phy_tx_started",
-              "xpu_0/phy_tx_started",
-              "side_ch_0/phy_tx_started",
               "tx_intf_0/tx_start_from_acc"
             ]
           },
@@ -4752,6 +4748,36 @@
             "ports": [
               "ps_clk",
               "xpu_0/ps_clk"
+            ]
+          },
+          "rx_intf_0_byte_count_to_xpu": {
+            "ports": [
+              "rx_intf_0/byte_count_to_xpu",
+              "xpu_0/byte_count"
+            ]
+          },
+          "rx_intf_0_byte_in_strobe_to_xpu": {
+            "ports": [
+              "rx_intf_0/byte_in_strobe_to_xpu",
+              "xpu_0/byte_in_strobe"
+            ]
+          },
+          "rx_intf_0_byte_in_to_xpu": {
+            "ports": [
+              "rx_intf_0/byte_in_to_xpu",
+              "xpu_0/byte_in"
+            ]
+          },
+          "rx_intf_0_fcs_in_strobe_to_xpu": {
+            "ports": [
+              "rx_intf_0/fcs_in_strobe_to_xpu",
+              "xpu_0/fcs_in_strobe"
+            ]
+          },
+          "rx_intf_0_fcs_ok_to_xpu": {
+            "ports": [
+              "rx_intf_0/fcs_ok_to_xpu",
+              "xpu_0/fcs_ok"
             ]
           },
           "rx_intf_0_gpio_status_bb": {
@@ -4764,6 +4790,54 @@
             "ports": [
               "rx_intf_0/gpio_status_bb_raw",
               "side_ch_0/gpio_status"
+            ]
+          },
+          "rx_intf_0_ht_aggr_last_to_xpu": {
+            "ports": [
+              "rx_intf_0/ht_aggr_last_to_xpu",
+              "xpu_0/rx_ht_aggr_last"
+            ]
+          },
+          "rx_intf_0_ht_aggr_to_xpu": {
+            "ports": [
+              "rx_intf_0/ht_aggr_to_xpu",
+              "xpu_0/rx_ht_aggr"
+            ]
+          },
+          "rx_intf_0_ht_unsupport_to_xpu": {
+            "ports": [
+              "rx_intf_0/ht_unsupport_to_xpu",
+              "xpu_0/ht_unsupport"
+            ]
+          },
+          "rx_intf_0_is_dsss_rx": {
+            "ports": [
+              "rx_intf_0/is_dsss_rx",
+              "xpu_0/is_dsss_rx"
+            ]
+          },
+          "rx_intf_0_pkt_header_valid_strobe_to_xpu": {
+            "ports": [
+              "rx_intf_0/pkt_header_valid_strobe_to_xpu",
+              "xpu_0/pkt_header_valid_strobe"
+            ]
+          },
+          "rx_intf_0_pkt_header_valid_to_xpu": {
+            "ports": [
+              "rx_intf_0/pkt_header_valid_to_xpu",
+              "xpu_0/pkt_header_valid"
+            ]
+          },
+          "rx_intf_0_pkt_len_to_xpu": {
+            "ports": [
+              "rx_intf_0/pkt_len_to_xpu",
+              "xpu_0/pkt_len"
+            ]
+          },
+          "rx_intf_0_pkt_rate_to_xpu": {
+            "ports": [
+              "rx_intf_0/pkt_rate_to_xpu",
+              "xpu_0/pkt_rate"
             ]
           },
           "rx_intf_0_sample": {
@@ -4971,10 +5045,35 @@
               "rx_intf_0/iq_valid_from_tx_intf"
             ]
           },
+          "tx_intf_0_is_dsss": {
+            "ports": [
+              "tx_intf_0/is_dsss",
+              "xpu_0/is_dsss_tx"
+            ]
+          },
+          "tx_intf_0_muxed_tx_end_for_xpu": {
+            "ports": [
+              "tx_intf_0/muxed_tx_end_for_xpu",
+              "xpu_0/phy_tx_done",
+              "side_ch_0/phy_tx_done"
+            ]
+          },
+          "tx_intf_0_muxed_tx_started_for_xpu": {
+            "ports": [
+              "tx_intf_0/muxed_tx_started_for_xpu",
+              "xpu_0/phy_tx_started",
+              "side_ch_0/phy_tx_started"
+            ]
+          },
+          "tx_intf_0_ofdm_phy_tx_start_gated": {
+            "ports": [
+              "tx_intf_0/ofdm_phy_tx_start_gated",
+              "openofdm_tx_0/phy_tx_start"
+            ]
+          },
           "tx_intf_0_phy_tx_start": {
             "ports": [
               "tx_intf_0/phy_tx_start",
-              "openofdm_tx_0/phy_tx_start",
               "side_ch_0/phy_tx_start",
               "xpu_0/phy_tx_start"
             ]
@@ -5192,6 +5291,12 @@
             "ports": [
               "xpu_0/gpio_status_lock_by_sig_valid",
               "rx_intf_0/gpio_status_lock_by_sig_valid"
+            ]
+          },
+          "xpu_0_is_dsss_ack": {
+            "ports": [
+              "xpu_0/is_dsss_ack",
+              "tx_intf_0/is_dsss_ack"
             ]
           },
           "xpu_0_mac_addr": {
