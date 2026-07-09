@@ -634,6 +634,7 @@ module xpu #
     .retrans_trigger(retrans_trigger),
     .tx_status(tx_status),
     .is_dsss_rx(is_dsss_rx),
+    .recv_ack_expect_dsss(is_dsss_tx_latched), // recv-ACK window-capture guard: only headers matching our own TX's modulation may capture the wait
     .ack_tx_flag(ack_tx_flag),
     .is_dsss_ack(is_dsss_ack),
     .wea(wea),

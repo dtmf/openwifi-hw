@@ -94,7 +94,7 @@ module rx_intf #
   output wire [15:0] byte_count_to_xpu,
   output wire        fcs_in_strobe_to_xpu,
   output wire        fcs_ok_to_xpu,
-  output wire        is_dsss_rx,   // = dsss_active: 1 while a received DSSS frame owns the RX decode bus
+  output wire        is_dsss_rx,   // exact per-cycle decode-bus ownership (dsss_active & ~ofdm_sig_valid): 1 while a DSSS frame owns the merged RX decode bus this cycle
 
   // -------- B-clean (plan D3): the DSSS RX PHY is the external opendsss_rx BD IP cell --------
   // rx_intf exports the DSSS enable to drive the cell and imports the cell's decode bus,
@@ -271,7 +271,8 @@ module rx_intf #
   //      DSSS is enabled by default;
   //      set slv_reg5[17] to disable (active-low so the stock driver's write keeps it on).
   wire        dsss_enable = ~slv_reg5[17];
-  wire        dsss_active;
+  wire        dsss_active;   // debug tap only: DSSS-frame-in-flight level; is_dsss_rx now exports dsss_bus_owner instead
+  wire        dsss_bus_owner; // glue sel = dsss_active & ~ofdm_sig_valid: exact per-cycle decode-bus ownership
   assign      dsss_enable_out = dsss_enable;   // B-clean: drive opendsss_rx_0/enable
   wire        m_pkt_header_valid;
   wire        m_pkt_header_valid_strobe;
@@ -321,7 +322,12 @@ module rx_intf #
   assign byte_count_to_xpu              = m_byte_count;
   assign fcs_in_strobe_to_xpu           = m_fcs_in_strobe;
   assign fcs_ok_to_xpu                  = m_fcs_ok;
-  assign is_dsss_rx                     = dsss_active;
+  // Recv-ACK modulation guard (2026-07-09): export the EXACT per-cycle bus ownership, not the
+  // dsss_active level. On an OFDM-preemption cycle (ofdm_sig_valid during an in-flight, possibly
+  // noise-triggered DSSS sync) the merged strobe is OFDM's, so is_dsss_rx must read 0 that cycle
+  // or xpu's guard would misclassify a real OFDM ACK header as DSSS. All prior consumers latch
+  // on DSSS FCS-strobe cycles, which only pass the merged bus when sel=1, so this is a no-op there.
+  assign is_dsss_rx                     = dsss_bus_owner;
 
   assign m00_axis_tvalid = m00_axis_tvalid_inner;
   assign m00_axis_tdata  = m00_axis_tdata_inner;
@@ -555,7 +561,8 @@ module rx_intf #
     .fcs_ok(m_fcs_ok),
     .phase_offset_taken(m_phase_offset_taken),
 
-    .dsss_active(dsss_active)
+    .dsss_active(dsss_active),
+    .bus_owner_is_dsss(dsss_bus_owner)
   );
 
   byte_to_word_fcs_sn_insert byte_to_word_fcs_sn_insert_inst (

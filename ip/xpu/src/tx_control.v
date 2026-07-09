@@ -58,6 +58,7 @@
         `DEBUG_PREFIX input wire backoff_done,
         input wire [(WIFI_TX_BRAM_ADDR_WIDTH-1):0] bram_addr,
         input wire is_dsss_rx,   // DSSS unicast-ACK B2: the received frame is 1 Mbps DSSS -> emit a DSSS ACK (from rx_intf via the BD)
+        input wire recv_ack_expect_dsss, // recv-ACK guard: modulation of our own just-sent frame (xpu.v is_dsss_tx_latched); only a matching-modulation header may capture the ACK wait
 
         input wire ampdu_rx_tid_disable,
         input wire [3:0] ampdu_rx_tid,
@@ -175,6 +176,22 @@
   assign is_pspoll =      (((FC_type==2'b01) && (FC_subtype==4'b1010))?1:0);
   assign is_rts =         (((FC_type==2'b01) && (FC_subtype==4'b1011) && (signal_len==20))?1:0);
   assign is_ack =         (((FC_type==2'b01) && (FC_subtype==4'b1101) && (signal_len==14))?1:0);
+
+  // Recv-ACK window-capture guard (2026-07-09). The decode inputs are the rx_intf merged
+  // OFDM|DSSS bus, so an ambient 1 Mbps DSSS frame whose length field is ACK/BlockAck-shaped
+  // (14/32 bytes, e.g. any neighbor 11b ACK/CTS) used to capture RECV_ACK_WAIT_SIG_VALID
+  // after an OFDM TX and burn the ~25us body window against its 112us DSSS body: guaranteed
+  // timeout, with the real OFDM ACK's header ignored while stuck in RECV_ACK. Symmetrically,
+  // an ambient OFDM ACK/CTS could burn the widened 250us DSSS wait. Only let a header whose
+  // decode source matches our own TX's modulation (recv_ack_expect_dsss = xpu is_dsss_tx_latched)
+  // capture the wait; a mismatched header neither captures nor touches ack_timeout_count.
+  // is_dsss_rx is exact per-cycle bus ownership (rx_intf: dsss_active & ~ofdm_sig_valid), so an
+  // OFDM header preempting an in-flight DSSS sync still reads as OFDM on its strobe cycle.
+  // len 32 (BlockAck-resp) is only a legitimate expectation for an OFDM wait: the board never
+  // sends DSSS aggregates (is_dsss_ack is forced 0 on the blockack path; 11b never aggregates),
+  // and a 32-byte 1 Mbps body (256us) can never fit the 24+120us capture budget anyway -- so a
+  // len-32 header during a DSSS wait is a guaranteed window burn with no upside: exclude it.
+  wire recv_ack_sig_match = (sig_valid && (signal_len==14 || (signal_len==32 && ~recv_ack_expect_dsss)) && (is_dsss_rx==recv_ack_expect_dsss));
 
   assign ack_cts_is_ongoing = ((tx_control_state==PREP_ACK) || (tx_control_state==SEND_DFL_ACK) || (tx_control_state==SEND_BLK_ACK));
   assign ackcts_signal_parity = (~(^ackcts_rate));//because the cts and ack pkt length field is always 14: 1110 that always has 3 1s
@@ -570,8 +587,8 @@
             // tx_dpram_op_counter<=tx_dpram_op_counter;
             // recv_ack_timeout_top<=recv_ack_timeout_top;
 
-            ack_timeout_count<= ( (sig_valid && (signal_len==14||signal_len==32))?0:(ack_timeout_count+1) );
-            if ( (ack_timeout_count<recv_ack_sig_valid_timeout_top_scale) && sig_valid && (signal_len==14||signal_len==32) ) begin //before timeout, we detect a sig valid, signal length field is ACK/BLK_ACK
+            ack_timeout_count<= ( recv_ack_sig_match?0:(ack_timeout_count+1) );
+            if ( (ack_timeout_count<recv_ack_sig_valid_timeout_top_scale) && recv_ack_sig_match ) begin //before timeout, we detect a sig valid of the expected modulation, signal length field is ACK/BLK_ACK
                 tx_control_state<= RECV_ACK;
                 // tx_try_complete<=tx_try_complete;
                 // tx_status<=tx_status;

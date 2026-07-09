@@ -90,7 +90,10 @@ module dsss_rx_and_mux #(
     output wire signed [31:0] phase_offset_taken,
 
     // status / debug
-    output wire               dsss_active     // 1 while a DSSS frame owns the path
+    output wire               dsss_active,    // 1 while a DSSS frame owns the path
+    output wire               bus_owner_is_dsss // = sel: EXACT per-cycle decode-bus ownership (drops on an OFDM-preemption
+                                                // cycle, unlike the dsss_active level) -> rx_intf is_dsss_rx -> xpu, so the
+                                                // recv-ACK modulation guard classifies each header by its true source
 );
 
     // ---------------------------------------------------------------
@@ -310,6 +313,7 @@ module dsss_rx_and_mux #(
     // downstream byte_to_word) the same cycle the FSM is sent back to D_IDLE.
     // ---------------------------------------------------------------
     wire sel = dsss_active & ~ofdm_sig_valid;
+    assign bus_owner_is_dsss = sel;
 
     assign pkt_header_valid        = sel ? 1'b1            : ofdm_pkt_header_valid;
     assign pkt_header_valid_strobe = sel ? d_phv_strobe    : ofdm_pkt_header_valid_strobe;
